@@ -1,3 +1,4 @@
+# coding: utf-8
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -7,19 +8,21 @@ import pickle
 import os
 import datetime
 
-rand = 234
+rand = 2343
 source_dir = '../../sources/processed'
 export_path = '../../export'
 
 desc = input('description: ')
-print()
+print('\n===========================================================\n')
 
+# データのロードと加工
 train = pickle.load(open(os.path.join(source_dir, 'lgb_train.pkl'), 'rb'))
 test = pickle.load(open(os.path.join(source_dir, 'lgb_test.pkl'), 'rb'))
 
 x = train.drop(columns=['cover'])
 y = train['cover']
 
+# cfでの学習
 # tr_x, va_x, tr_y, va_y = train_test_split(train.drop(columns=['cover']), train['cover'], test_size=0.3, random_state=rand)
 kf = KFold(n_splits=4, shuffle=True, random_state=rand)
 model = []
@@ -34,7 +37,10 @@ for tr_idx, va_idx in kf.split(train):
         'objective': 'regression',
         'metric': 'rmse',
         'verbose': -1,
-        'random_state': rand
+        'random_state': rand,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 3,
+        'min_data_in_leaf': 100
     }
 
     model.append(lgb.train(
@@ -46,8 +52,7 @@ for tr_idx, va_idx in kf.split(train):
         callbacks=[lgb.early_stopping(stopping_rounds=3, verbose=True)]
     ))
 
-    print()
-
+# 予測を得るための関数
 def getprediction(x, model):
     result = []
     for i in range(4):
@@ -58,6 +63,7 @@ def getprediction(x, model):
 
     return result
 
+# 予測と出力
 sub_df = pd.DataFrame({'index': [i for i in range(len(test))], 'pred': getprediction(test, model)['pred']})
 
 va_y.index = [i for i in range(len(va_y))]
@@ -72,8 +78,8 @@ result_df['error'] = (result_df['cover'] - result_df['pred'])**2
 imp = model[3].feature_importance(importance_type='gain')
 imp_df = pd.DataFrame({'col': tr_x.columns, 'importance': imp})
 imp_df.sort_values('importance', ascending=False, inplace=True)
+print('\n===========================================================\n')
 print(imp_df)
-print()
 
 if desc != 'test':
     date = str(datetime.datetime.now().strftime('%m_%d_%H:%M'))
@@ -88,5 +94,7 @@ if desc != 'test':
     f = open(os.path.join(backup_path, 'description.txt'), 'w')
     f.write(desc)
     f.close()
+    print('files exported.')
 
-print('validation score: ' + str(np.sqrt(result_df['error'].mean())))
+print('\nvalidation score: ' + str(np.sqrt(result_df['error'].mean())))
+print()
