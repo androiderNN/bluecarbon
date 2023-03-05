@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import KFold
-import lightgbm as lgb
+from sklearn.neural_network import MLPRegressor
 import pickle
 import os
 import datetime
@@ -23,36 +23,14 @@ def training_cv(x, y, rand):
         tr_x, va_x = x.iloc[tr_idx], x.iloc[va_idx]
         tr_y, va_y = y.iloc[tr_idx], y.iloc[va_idx]
 
-        lgb_train = lgb.Dataset(tr_x, tr_y)
-        lgb_val = lgb.Dataset(va_x, va_y)
-
-        params = {
-            'objective': 'regression',
-            'metric': 'rmse',
-            'verbose': -1,
-            'random_state': rand,
-            'bagging_fraction': 0.8,
-            'bagging_freq': 1,
-            'feature_fraction': 0.8,
-            'min_data_in_leaf': 10,
-            'lambda_l1': 0.2,
-            'lambda_l2': 0.2
-            }
-
-        mod = (lgb.train(
-            params,
-            lgb_train,
-            valid_sets=[lgb_train, lgb_val],
-            valid_names=['train', 'val'],
-            num_boost_round=1000,
-            callbacks=[lgb.early_stopping(stopping_rounds=3, verbose=True)]
-        ))
-
+        mod = MLPRegressor(max_iter=10000, hidden_layer_sizes=(50, 50, 10), random_state=rand, early_stopping=True)
+        mod.fit(tr_x.values, tr_y.values)
         model.append(mod)
 
-        result_df = pd.concat([result_df, pd.DataFrame({'index': tr_y.index, 'cover': tr_y, 'pred': mod.predict(tr_x), 'type': ['train']*len(tr_y)})])
-        result_df = pd.concat([result_df, pd.DataFrame({'index': va_y.index, 'cover': va_y, 'pred': mod.predict(va_x), 'type': ['valid']*len(va_y)})])
+        result_df = pd.concat([result_df, pd.DataFrame({'index': tr_y.index, 'cover': tr_y, 'pred': mod.predict(tr_x.values), 'type': ['train']*len(tr_y)})])
+        result_df = pd.concat([result_df, pd.DataFrame({'index': va_y.index, 'cover': va_y, 'pred': mod.predict(va_x.values), 'type': ['valid']*len(va_y)})])
 
+    result_df['pred'].clip(0, 1, inplace=True)
     result_df['error'] = (result_df['cover'] - result_df['pred'])**2
     result_df.sort_values('type', inplace=True)
 
@@ -66,7 +44,7 @@ def getprediction(x, model):
     '''
     result = []
     for i in range(len(model)):
-        result.append(list(model[i].predict(x, predict_disable_shape_check=True)))
+        result.append(list(model[i].predict(x.values)))
     
     result = pd.DataFrame(result, index=['pred_'+str(i) for i in range(4)]).T
     result['pred'] = result.mean(axis=1)
@@ -80,34 +58,30 @@ if __name__ == '__main__':
     export_path = os.path.join(fdir, '../../export')
 
     desc = input('description: ')
-    print('\n===========================================================\n')
+    print('\n===========================================================\ntraining...')
 
     # データのロードと学習
-    train = pickle.load(open(os.path.join(source_dir, 'lgb_train.pkl'), 'rb'))
-    test = pickle.load(open(os.path.join(source_dir, 'lgb_test.pkl'), 'rb'))
+    train = pickle.load(open(os.path.join(source_dir, 'nn_train.pkl'), 'rb'))
+    test = pickle.load(open(os.path.join(source_dir, 'nn_test.pkl'), 'rb'))
 
     x = train.drop(columns=['cover'])
     y = train['cover']
 
     model, result_df = training_cv(x, y, rand)
 
-    # 予測と重要度の取得
+    # 予測の取得
     sub_df = pd.DataFrame({'index': [i for i in range(len(test))], 'pred': getprediction(test, model)['pred']})
-
-    imp = model[3].feature_importance(importance_type='gain')
-    imp_df = pd.DataFrame({'col': x.columns, 'importance': imp})
-    imp_df.sort_values('importance', ascending=False, inplace=True)
+    sub_df['pred'].clip(0, 1, inplace=True)
 
     # ファイルの出力
     if desc != 'test':
         date = str(datetime.datetime.now().strftime('%m_%d_%H:%M'))
-        backup_path = os.path.join(export_path, date + '_lgb')
+        backup_path = os.path.join(export_path, date + '_nn')
         os.mkdir(backup_path)
 
-        imp_df.to_csv(os.path.join(backup_path, 'importance.csv'))
         result_df.to_csv(os.path.join(backup_path, 'result.csv'))
         sub_df.to_csv(os.path.join(backup_path, 'submit.csv'), header=False, index=False)
-        pickle.dump(model, open(os.path.join(backup_path, 'lgb_model.pkl'), 'wb'))
+        pickle.dump(model, open(os.path.join(backup_path, 'nn_model.pkl'), 'wb'))
 
         f = open(os.path.join(backup_path, 'description.txt'), 'w')
         f.write(desc)
@@ -115,8 +89,6 @@ if __name__ == '__main__':
         print('files exported.')
 
     print('\n===========================================================\n')
-    print(imp_df)
-    print()
 
     gr = result_df.loc[:, ['error', 'type']].groupby('type')
     print(gr.describe())
@@ -124,4 +96,4 @@ if __name__ == '__main__':
     print()
     print('validation score: ' + str(np.sqrt(result_df.loc[result_df['type']=='valid', 'error'].mean())))
     print('overfitting: ' + str(np.sqrt(result_df.loc[result_df['type']=='valid', 'error'].mean())/np.sqrt(result_df.loc[result_df['type']=='train', 'error'].mean())))
-    print()
+    print(result_df.sort_values('cover'))
